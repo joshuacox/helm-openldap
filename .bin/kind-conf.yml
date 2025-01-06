@@ -14,11 +14,15 @@ nodes:
     hostPort: 8080
     protocol: TCP
   - containerPort: 443
-    hostPort: 8443
+    hostPort: 8444
     protocol: TCP
   - containerPort: 30636
     hostPort: 30636
   - containerPort: 30389
     hostPort: 30389
+  - containerPort: 31389
+    hostPort: 31389
+  - containerPort: 31636
+    hostPort: 31636
 - role: worker
 - role: worker

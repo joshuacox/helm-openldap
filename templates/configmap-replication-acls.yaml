@@ -18,10 +18,11 @@ data:
   # replication
   syncprov.ldif: |
     # Load syncprov module
-    dn: cn=module{0},cn=config
+    dn: cn=module,cn=config
+    cn: module
     objectClass: olcModuleList
-    cn: module{0}
-    olcModuleLoad: syncprov
+    olcModuleLoad: syncprov.so
+    olcModulePath: /opt/bitnami/openldap/lib/openldap
   serverid.ldif: |
     # Set server ID
     dn: cn=config
@@ -42,8 +43,8 @@ data:
     add: olcSyncRepl
     {{- include "olcSyncRepls" . }}
     -
-    add: olcMirrorMode
-    olcMirrorMode: TRUE
+    add: olcMultiProvider
+    olcMultiProvider: TRUE
   bsyncprov.ldif: |
     dn: olcOverlay=syncprov,olcDatabase={2}mdb,cn=config
     objectClass: olcOverlayConfig
@@ -58,8 +59,8 @@ data:
 
     dn: olcDatabase={2}mdb,cn=config
     changetype: modify
-    add: olcMirrorMode
-    olcMirrorMode: TRUE
+    add: olcMultiProvider
+    olcMultiProvider: TRUE
   # acls
   acls.ldif: |
 {{- if .Values.customAcls }}

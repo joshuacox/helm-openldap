@@ -63,23 +63,46 @@ Generate olcServerID list
   {{- end -}}
 {{- end -}}
 
+{{- define "openldap.replication.tls_cacert" -}}
+{{- if .Values.initTLSSecret.tls_enabled -}}
+  {{- if .Values.replication.tls_cacert -}}
+    {{- printf "tls_cacert=%s" .Values.replication.tls_cacert -}}
+  {{- else }}
+    {{- printf "tls_cacert=/opt/bitnami/openldap/certs/ca.crt" -}}
+  {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "openldap.replication.tls_reqcert" -}}
+{{- if .Values.initTLSSecret.tls_enabled -}}
+  {{- if .Values.replication.tls_reqcert -}}
+    {{- printf "tls_reqcert=%s" .Values.replication.tls_reqcert -}}
+  {{- else }}
+    {{- printf "tls_reqcert=demand" -}}
+  {{- end -}}
+{{- else }}
+  {{- printf "tls_reqcert=never" -}}
+{{- end -}}
+{{- end -}}
+
 {{/*
 Generate olcSyncRepl list
 */}}
 {{- define "olcSyncRepls" -}}
 {{- $name := (include "openldap.fullname" .) }}
 {{- $namespace := .Release.Namespace }}
-{{- $bindDNUser := .Values.global.adminUser }}
+{{- $bindDNUser := .Values.global.configUser }}
 {{- $cluster := .Values.replication.clusterName }}
 {{- $configPassword :=  ternary .Values.global.configPassword "%%CONFIG_PASSWORD%%" (empty .Values.global.existingSecret) }}
 {{- $retry := .Values.replication.retry }}
 {{- $timeout := .Values.replication.timeout }}
 {{- $starttls := .Values.replication.starttls }}
-{{- $tls_reqcert := .Values.replication.tls_reqcert }}
+{{- $tls_reqcert := (include "openldap.replication.tls_reqcert" .) }}
+{{- $tls_cacert := (include "openldap.replication.tls_cacert" .) }}
 {{- $nodeCount := .Values.replicaCount | int }}
   {{- range $index0 := until $nodeCount }}
     {{- $index1 := $index0 | add1 }}
-    olcSyncRepl: rid=00{{ $index1 }} provider=ldap://{{ $name }}-{{ $index0 }}.{{ $name }}-headless.{{ $namespace }}.svc.{{ $cluster }}:1389 binddn="cn={{ $bindDNUser }},cn=config" bindmethod=simple credentials={{ $configPassword }} searchbase="cn=config" type=refreshAndPersist retry="{{ $retry }} +" timeout={{ $timeout }} starttls={{ $starttls }} tls_reqcert={{ $tls_reqcert }}
+    olcSyncRepl: rid=00{{ $index1 }} provider=ldap://{{ $name }}-{{ $index0 }}.{{ $name }}-headless.{{ $namespace }}.svc.{{ $cluster }}:1389 binddn="cn={{ $bindDNUser }},cn=config" bindmethod=simple credentials={{ $configPassword }} searchbase="cn=config" type=refreshAndPersist retry="{{ $retry }} +" timeout={{ $timeout }} starttls={{ $starttls }} {{ $tls_reqcert }} {{ $tls_cacert }}
   {{- end -}}
 {{- end -}}
 
@@ -96,7 +119,8 @@ Generate olcSyncRepl list
 {{- $retry := .Values.replication.retry }}
 {{- $timeout := .Values.replication.timeout }}
 {{- $starttls := .Values.replication.starttls }}
-{{- $tls_reqcert := .Values.replication.tls_reqcert }}
+{{- $tls_reqcert := (include "openldap.replication.tls_reqcert" .) }}
+{{- $tls_cacert := (include "openldap.replication.tls_cacert" .) }}
 {{- $interval := .Values.replication.interval }}
 {{- $nodeCount := .Values.replicaCount | int }}
   {{- range $index0 := until $nodeCount }}
@@ -114,7 +138,8 @@ Generate olcSyncRepl list
       retry="{{ $retry }} +"
       timeout={{ $timeout }}
       starttls={{ $starttls }}
-      tls_reqcert={{ $tls_reqcert }}
+      {{ $tls_reqcert }}
+      {{ $tls_cacert }}
   {{- end -}}
 {{- end -}}
 
@@ -149,8 +174,22 @@ Return the proper Docker Image Registry Secret Names
 {{/*
 Return the proper Openldap init container image name
 */}}
-{{- define "openldap.initContainerImage" -}}
-{{- include "common.images.image" (dict "imageRoot" .Values.customTLS.image "global" .Values.global) -}}
+{{- define "openldap.initTLSSecretImage" -}}
+{{- include "common.images.image" (dict "imageRoot" .Values.initTLSSecret.image "global" .Values.global) -}}
+{{- end -}}
+
+{{/*
+Return the proper Openldap init container image name
+*/}}
+{{- define "openldap.initSchemaImage" -}}
+{{- include "common.images.image" (dict "imageRoot" .Values.initSchema.image "global" .Values.global) -}}
+{{- end -}}
+
+{{/*
+Return the proper Openldap volume permissions init container image name
+*/}}
+{{- define "openldap.volumePermissionsImage" -}}
+{{- include "common.images.image" (dict "imageRoot" .Values.volumePermissions.image "global" .Values.global) -}}
 {{- end -}}
 
 
@@ -160,8 +199,14 @@ Cannot return list => return string comma separated
 */}}
 {{- define "openldap.builtinSchemaFiles" -}}
   {{- $schemas := "" -}}
-  {{- if .Values.replication.enabled -}}
-    {{- $schemas = "syncprov,serverid,csyncprov,rep,bsyncprov,brep,acls" -}}
+  {{- $context := index . "context" -}}
+  {{- $mode := index . "mode" -}}
+  {{- if $context.Values.replication.enabled -}}
+    {{- if $mode -}}
+      {{- $schemas = "brep,readonly" -}}
+    {{- else -}}
+      {{- $schemas = "syncprov,serverid,csyncprov,rep,bsyncprov,brep,acls" -}}
+    {{- end -}}
   {{- else -}}
     {{- $schemas = "acls" -}}
   {{- end -}}
@@ -169,13 +214,28 @@ Cannot return list => return string comma separated
 {{- end -}}
 
 {{/*
+Return the list of custom schema files to use
+Cannot return list => return string comma separated
+*/}}
+{{- define "openldap.customSchemaFiles" -}}
+  {{- $context := index . "context" -}}
+  {{- $schemas := "" -}}
+  {{- $schemas := ((join "," ($context.Values.customSchemaFiles | keys | sortAlpha))  | replace ".ldif" "") -}}
+  {{- print $schemas -}}
+{{- end -}}
 
 {{/*
 Return the list of all schema files to use
 Cannot return list => return string comma separated
 */}}
 {{- define "openldap.schemaFiles" -}}
+  {{- $context := index . "context" -}}
+  {{- $mode := index . "mode" -}}
   {{- $schemas := (include "openldap.builtinSchemaFiles" .) -}}
+  {{- $custom_schemas := (include "openldap.customSchemaFiles" .) -}}
+  {{- if gt (len $custom_schemas) 0 -}}
+    {{- $schemas = print $schemas "," $custom_schemas  -}}
+  {{- end -}}
   {{- print $schemas -}}
 {{- end -}}
 
@@ -191,7 +251,7 @@ Return the proper base domain
 tmp method to iterate through the ldapDomain
 */}}
 {{- define "tmp.baseDomain" -}}
-{{- if regexMatch ".*=.*,.*" .Values.global.ldapDomain }}
+{{- if regexMatch ".*=.*" .Values.global.ldapDomain }}
 {{- printf "%s" .Values.global.ldapDomain }}
 {{- else }}
 {{- $parts := split "." .Values.global.ldapDomain }}
@@ -210,7 +270,7 @@ Return the server name
 {{- end -}}
 
 {{/*
-Return the bdmin indDN
+Return the admin bindDN
 */}}
 {{- define "global.bindDN" -}}
 {{- printf "cn=%s,%s" .Values.global.adminUser (include "global.baseDomain" .) -}}

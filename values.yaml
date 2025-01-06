@@ -19,7 +19,6 @@ global:
   ## Default Passwords to use, stored as a secret. Not used if existingSecret is set.
   adminUser: "admin"
   adminPassword: Not@SecurePassw0rd
-  configUserEnabled: true
   configUser: "admin"
   configPassword: Not@SecurePassw0rd
   ldapPort: 389
@@ -51,10 +50,16 @@ extraDeploy: []
 
 replicaCount: 3
 
+# Note: you need replication enabled to use readonly replicas!
+readOnlyReplicaCount: 0
+
 image:
   # From repository https://hub.docker.com/r/bitnami/openldap/
-  repository: bitnami/openldap
-  tag: 2.6.3
+  #repository: bitnami/openldap
+  #tag: 2.6.3
+  # Temporary fix
+  repository: jpgouin/openldap
+  tag: 2.6.8-fix
   pullPolicy: Always
   pullSecrets: []
 
@@ -62,17 +67,13 @@ image:
 # Valid log levels: none, error, warning, info (default), debug, trace
 logLevel: info
 
-
-# Settings for enabling TLS with custom certificate
-# need a secret with tls.crt, tls.key and ca.crt keys with associated files
-# Ref: https://kubernetes.io/docs/tasks/configmap-secret/managing-secret-using-kubectl/#create-a-secret
-customTLS:
-  enabled: false
-  image:
-    repository: alpine/openssl
+initSchema:
+  image: 
+    repository: debian
     tag: latest
-  secret: ""  # The name of a kubernetes.io/tls type secret to use for TLS
-## Add additional labels to all resources
+    pullPolicy: Always
+    pullSecrets: []
+
 extraLabels: {}
 
 service:
@@ -80,26 +81,78 @@ service:
   ## If service type NodePort, define the value here
   #ldapPortNodePort:
   #sslLdapPortNodePort:
+
+  # Disable if you do not want to expose port on service
+  enableLdapPort: true
+  enableSslLdapPort: true
+
   ## List of IP addresses at which the service is available
   ## Ref: https://kubernetes.io/docs/user-guide/services/#external-ips
   ##
   externalIPs: []
 
+  ## Define a static clusterIP
+  #clusterIP:
   #loadBalancerIP:
   #loadBalancerSourceRanges: []
   type: ClusterIP
   sessionAffinity: None
+  externalTrafficPolicy: Cluster
+
+  ## Represents the dual-stack-ness requested or required by this Service. Possible values are
+  ## SingleStack, PreferDualStack or RequireDualStack.
+  ## The ipFamilies and clusterIPs fields depend on the value of this field.
+  ## Ref: https://kubernetes.io/docs/concepts/services-networking/dual-stack/
+  ipFamilyPolicy: SingleStack
+
+# Service for read only cluster pods (if enabled)
+serviceReadOnly:
+  annotations: {}
+  ## If service type NodePort, define the value here
+  #ldapPortNodePort:
+  #sslLdapPortNodePort:
+
+  # Disable if you do not want to expose port on service
+  enableLdapPort: true
+  enableSslLdapPort: true
+
+  # Control ports used in statefulset
+  headlessEnableLdapPort: true
+  headlessEnableSslLdapPort: true
+
+  ## List of IP addresses at which the service is available
+  ## Ref: https://kubernetes.io/docs/user-guide/services/#external-ips
+  ##
+  externalIPs: []
+
+  ## Define a static clusterIP
+  #clusterIP:
+  #loadBalancerIP:
+  #loadBalancerSourceRanges: []
+  type: ClusterIP
+  sessionAffinity: None
+  externalTrafficPolicy: Cluster
+
+  ## Represents the dual-stack-ness requested or required by this Service. Possible values are
+  ## SingleStack, PreferDualStack or RequireDualStack.
+  ## The ipFamilies and clusterIPs fields depend on the value of this field.
+  ## Ref: https://kubernetes.io/docs/concepts/services-networking/dual-stack/
+  ipFamilyPolicy: SingleStack
 
 # Default configuration for openldap as environment variables. These get injected directly in the container.
 # Use the env variables from https://hub.docker.com/r/bitnami/openldap/
 # Be careful, do not modify the following values unless you know exactly what your are doing
 env:
- BITNAMI_DEBUG: "true"
+ # set this to "true" to enable bootstrap debugging
+ BITNAMI_DEBUG: "false"
+ # higher -> less verbose. See https://www.openldap.org/doc/admin26/slapdconfig.html
  LDAP_LOGLEVEL: "256"
- LDAP_TLS_ENFORCE: "false"
+ LDAP_REQUIRE_TLS: "false"
  LDAPTLS_REQCERT: "never"
  LDAP_ENABLE_TLS: "yes"
  LDAP_SKIP_DEFAULT_TREE: "no"
+ LDAP_ALLOW_ANON_BINDING: 'no'
+
 
 # Pod Disruption Budget for Stateful Set
 # Disabled by default, to ensure backwards compatibility
@@ -117,10 +170,12 @@ pdb:
 # userPasswords: bitnami1, bitnami2
 
 ## Group to create and add list of user above
-## Default set by bitnami image
+  ## Default set by bitnami image
 # group: readers
 
 # Custom openldap schema files used to be used in addition to default schemas
+# Note that the supplied files are sorted by name and inserted into 'LDAP_EXTRA_SCHEMAS' env var
+# after chart default schemas, allowing you to control the loading sequence.
 # customSchemaFiles:
 #   custom.ldif: |-
 #     # custom schema
@@ -187,7 +242,10 @@ replication:
   timeout: 1
   interval: 00:00:00:10
   starttls: "critical"
-  tls_reqcert: "never"
+  # override the tls_reqcert parameter (default if never and demand when initTLSSecret.tls_enabled = true )
+  # tls_reqcert: "never"
+  # override the location of tls_cacert to trust (allowed when initTLSSecret.tls_enabled = true )
+  # tls_cacert: "/etc/ssl/certs/ca-certificates.crt"
 ## Persist data to a persistent volume
 persistence:
   enabled: true
@@ -358,18 +416,63 @@ sidecars: {}
 ##    command: ['sh', '-c', 'echo "hello world"']
 ##
 initContainers: {}
-## ServiceAccount configuration
+
+## Service Account
+## ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/
 ##
 serviceAccount:
-  ## @param serviceAccount.create Specifies whether a ServiceAccount should be created
+  ## @param serviceAccount.create Enable creation of ServiceAccount for Apache pod
   ##
   create: true
   ## @param serviceAccount.name The name of the ServiceAccount to use.
   ## If not set and create is true, a name is generated using the common.names.fullname template
   ##
   name: ""
+  ## @param serviceAccount.automountServiceAccountToken Allows auto mount of ServiceAccountToken on the serviceAccount created
+  ## Can be set to false if pods using this serviceAccount do not need to use K8s API
+  ##
+  automountServiceAccountToken: false
+  ## @param serviceAccount.annotations Additional custom annotations for the ServiceAccount
+  ##
+  annotations: {}  
 
 ## @section Init Container Parameters
+
+## 'initTlsSecret' init container parameters
+## need a secret with tls.crt, tls.key and ca.crt keys with associated files
+## based on the *containerSecurityContext parameters
+##
+initTLSSecret:
+  tls_enabled: false
+  ##  openssl image
+  ## @param initTlsSecret.image.registry openssl image registry
+  ## @param initTlsSecret.image.repository openssl image name
+  ## @param initTlsSecret.image.tag openssl image tag
+  ##
+  image:
+    registry: docker.io
+    repository: alpine/openssl
+    tag: latest
+    ## @param image.pullPolicy openssl image pull policy
+    ## Specify a imagePullPolicy
+    ## Defaults to 'Always' if image tag is 'latest', else set to 'IfNotPresent'
+    ## ref: https://kubernetes.io/docs/user-guide/images/#pre-pulling-images
+    ##
+    pullPolicy: IfNotPresent
+  # The name of a kubernetes.io/tls type secret to use for TLS
+  secret: "" 
+  ## init-tls-secret container's resource requests and limits
+  ## ref: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+  ## @param initTlsSecret.resources.limits The resources limits for the init container
+  ## @param initTlsSecret.resources.requests The requested resources for the init container
+  ##
+  resources:
+    ## Example:
+    ## limits:
+    ##   cpu: 500m
+    ##   memory: 1Gi
+    limits: {}
+    requests: {}
 
 ## 'volumePermissions' init container parameters
 ## Changes the owner and group of the persistent volume mount point to runAsUser:fsGroup values
@@ -385,41 +488,46 @@ volumePermissions:
   ## @param volumePermissions.image.repository Bitnami Shell image repository
   ## @param volumePermissions.image.tag Bitnami Shell image tag (immutable tags are recommended)
   ## @param volumePermissions.image.pullPolicy Bitnami Shell image pull policy
-  ## @param volumePermissions.image.pullSecrets Bitnami Shell image pull secrets
   ##
   image:
     registry: docker.io
     repository: bitnami/bitnami-shell
     tag: 10-debian-10
     pullPolicy: IfNotPresent
-    ## Optionally specify an array of imagePullSecrets.
-    ## Secrets must be manually created in the namespace.
-    ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
-    ## e.g:
-    ## pullSecrets:
-    ##   - myRegistryKeySecretName
-    ##
-    pullSecrets: []
+
   ## Command to execute during the volumePermission startup
-  ## command: ['sh', '-c', 'echo "hello world"']
-  command: {}
+    command: [ 'sh', '-c', 'chmod -R g+rwX /bitnami' ]
+  ## command: {}
   ## Init container's resource requests and limits
-  ## ref: http://kubernetes.io/docs/user-guide/compute-resources/
+  ## ref: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
   ## @param volumePermissions.resources.limits The resources limits for the init container
   ## @param volumePermissions.resources.requests The requested resources for the init container
   ##
   resources:
+    ## Example:
+    ## limits:
+    ##   cpu: 500m
+    ##   memory: 1Gi
     limits: {}
     requests: {}
-  ## Init container Container Security Context
-  ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-container
-  ## @param volumePermissions.containerSecurityContext.runAsUser Set init container's Security Context runAsUser
-  ## NOTE: when runAsUser is set to special value "auto", init container will try to chown the
-  ##   data folder to auto-determined user&group, using commands: `id -u`:`id -G | cut -d" " -f2`
-  ##   "auto" is especially useful for OpenShift which has scc with dynamic user ids (and 0 is not allowed)
+
+## 'updateReplication' init container parameters
+## based on the *global.existingSecret/*containerSecurityContext parameters
+##
+updateReplication:
+  ## Init container's resource requests and limits
+  ## ref: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+  ## @param volumePermissions.resources.limits The resources limits for the init container
+  ## @param volumePermissions.resources.requests The requested resources for the init container
   ##
-  containerSecurityContext:
-    runAsUser: 0
+  resources:
+    ## Example:
+    ## limits:
+    ##   cpu: 500m
+    ##   memory: 1Gi
+    limits: {}
+    requests: {}
+
 
 ## Configure extra options for liveness, readiness, and startup probes
 ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#configure-probes

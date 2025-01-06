@@ -1,0 +1,37 @@
+name: 'Setup env'
+description: 'Greet someone'
+inputs:
+  install-chaos:
+    description: 'Setup ChaosMesh'
+    required: true
+    default: false
+runs:
+  using: "composite"
+  steps:
+    - name: Lint
+      shell: bash
+      run: |
+        curl -fsSL -o /tmp/get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        chmod 700 /tmp/get_helm.sh
+        /tmp/get_helm.sh
+        helm lint .
+    - name: setup cluster
+      shell: bash
+      run: |
+        curl -Lo /tmp/kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+        chmod +x /tmp/kind
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+        rm -f kubectl
+        sudo apt update
+        sudo apt-get install -y ldap-utils
+        /tmp/kind create cluster --config=$GITHUB_WORKSPACE/.bin/kind-conf.yml --image=kindest/node:v1.31.0@sha256:53df588e04085fd41ae12de0c3fe4c72f7013bba32a20e7325357a1ac94ba865
+        kubectl apply -f https://projectcontour.io/quickstart/contour.yaml
+        kubectl patch daemonsets -n projectcontour envoy -p '{"spec":{"template":{"spec":{"nodeSelector":{"ingress-ready":"true"}}}}}'
+        kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.1/cert-manager.yaml
+        kubectl rollout status deployments -n cert-manager
+    - name: setup chaos mesh
+      if: ${{ inputs.install-chaos == 'true' }}
+      shell: bash
+      run: |
+        curl -sSL https://mirrors.chaos-mesh.org/v2.6.2/install.sh  | bash -s -- --local kind
